@@ -19,6 +19,7 @@ q.pop = q.pop
 q.len = q.len
 q.clear = q.clear
 --local socket = require"socket"
+local BUDGET_PER_QUERY = 200
 
 local hijacknil = setmetatable({}, {__tostring=function() return "nil" end})
 local function capture(...)
@@ -71,6 +72,7 @@ local updated = {}
 local nxt_id = 1
 
 local function register(obj)
+	--print("registering "..tostring(obj).." "..tostring(nxt_id))
 	obj_to_id[obj] = nxt_id
 	id_to_obj[nxt_id] = obj
 	updated[nxt_id] = true
@@ -79,7 +81,7 @@ end
 
 local function get_repr(id)
 	--print("id "..id)
-	--print("obj "..json.encode(id_to_obj[id]))
+	--if id ~= 10 then print("obj "..json.encode(id_to_obj[id])) end
 	local extras = obj_to_extras[id_to_obj[id]]
 	return extras.repr
 end
@@ -113,9 +115,16 @@ local function do_explore_obj(obj, is_multiple_return)
 				credit = credit - 20
 				goto cntinue
 			end
-			credit = max(credit, 20)
-			register(obj)
+			if not obj_to_id[obj] then
+				credit = max(credit, 20)
+				register(obj)
+			end
 			if type(obj) == "table" and obj ~= hijacknil then
+				local prev_keys = setmetatable({}, {__mode="k"})
+				local extras = obj_to_extras[obj]
+				if extras then
+					prev_keys = extras.exported_keys
+				end
 				credit = credit - 20
 				local len = 0
 				for k,v in pairs(obj) do
@@ -130,19 +139,27 @@ local function do_explore_obj(obj, is_multiple_return)
 					rlen = 0,
 					len = len,
 					type = typ,
-					exported_keys = {},
+					exported_keys = prev_keys,
 					cursor = 1,
 				}
 				for k,v in pairs(obj) do
-					q:push({
-						k=k,
-						v=v,
-						parent=obj,
-					})
+					if not prev_keys[k] then
+						q:push({
+							k=k,
+							v=v,
+							parent=obj,
+						})
+					end
 				end
 			elseif type(obj) == "string" then
 				if credit >= #obj then
 					credit = credit - #obj
+					obj_to_extras[obj] = {
+						repr = obj,
+						len = #obj,
+						type = "string",
+						cursor = #obj+1,
+					}
 				else
 					obj_to_extras[obj] = {
 						repr = obj:sub(1, credit),
@@ -173,6 +190,7 @@ local function do_explore_obj(obj, is_multiple_return)
 			local extras = obj_to_extras[parent]
 			local rlen = extras.rlen
 			local repr = extras.repr
+			extras.exported_keys[k] = true
 			repr[rlen+1] = {obj_to_id[k], obj_to_id[v]}
 			extras.rlen = rlen + 1
 			updated[obj_to_id[parent]] = true
@@ -181,7 +199,7 @@ local function do_explore_obj(obj, is_multiple_return)
 end
 
 local function explore_obj(obj, is_multiple_return)
-	credit = 200
+	credit = BUDGET_PER_QUERY
 	do_explore_obj(obj, multiple_return)
 	local value = {}
 	local new_objects = {}
@@ -192,7 +210,7 @@ local function explore_obj(obj, is_multiple_return)
 	end
 	value.new_objects = new_objects
 	value.meta = meta
-	value.top_object = obj_to_id[stuff]
+	value.top_object = obj_to_id[obj]
 	return {value = value}
 end
 
@@ -220,6 +238,13 @@ end
 
 local function explore_handle(t)
 	local id = t.handle
+	local obj = id_to_obj[id]
+	if not obj then
+		return {error = "No object with handle "..id}
+	end
+	local extras = obj_to_extras[obj]
+	extras.repr = nil
+	return explore_obj(obj)
 end
 
 local handlers = {
@@ -258,12 +283,35 @@ return a
 
 	]]})))
 
-
+-- test with self-referential object
 print(json_encode(eval({script=[[
-a,"b","hello",print
+t = {}
+t[1] = t
 
 	]]})))
 print(json_encode(explore_expr({script=[[
-{2,4,6,8,10,12,14,16,18,20,22,24,26,28,30}
+t
 
 	]]})))
+-- add a key to the object
+print(json_encode(eval({script=[[
+t[14] = 100
+]]
+})))
+-- get the new stuff only
+print(json_encode(explore_handle({handle=1})))
+
+print(json_encode(eval({script=[[
+other_t = {2,4,6,8,10,12,14,16,18,20,22,24,26,28,30}
+]]})))
+-- get just the first few entries of a big object
+print(json_encode(explore_expr({script=[[
+other_t
+]]})))
+-- get more of the entries
+print(json_encode(explore_handle({handle=5})))
+print(json_encode(explore_handle({handle=5})))
+-- this returns an empty success result
+-- because we already got all the stuff
+print(json_encode(explore_handle({handle=5})))
+
