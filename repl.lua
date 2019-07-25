@@ -152,23 +152,29 @@ local function do_explore_obj(obj, is_multiple_return)
 					end
 				end
 			elseif type(obj) == "string" then
-				if credit >= #obj then
+				local start = 1
+				local extra = obj_to_extras[obj]
+				if extra then
+					start = extra.cursor
+				end
+				if credit >= #obj-start-1 then
 					credit = credit - #obj
 					obj_to_extras[obj] = {
-						repr = obj,
+						repr = obj:sub(start),
 						len = #obj,
 						type = "string",
 						cursor = #obj+1,
 					}
 				else
 					obj_to_extras[obj] = {
-						repr = obj:sub(1, credit),
+						repr = obj:sub(start, start+credit),
 						len = #obj,
 						type = "string",
-						cursor = credit+1,
+						cursor = start+credit+1,
 					}
 					credit = 0
 				end
+				updated[obj_to_id[obj]] = true
 			else
 				credit = credit - 20
 				local typ = type(obj)
